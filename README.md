@@ -45,3 +45,7 @@ swift run -c release noise-render <dir> [seconds] [rmsDbfs]   # write the four n
 ```
 
 `Sources/NoiseKit` holds the noise generator and volume policy, `Sources/NoiseBorder` the menu bar app.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
