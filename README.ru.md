@@ -4,7 +4,7 @@
 
 <p align="center"><img src="docs/screenshot.png" width="386" alt="Окно NoiseBorder в строке меню: тип шума, тембр, громкость AirPlay-приёмника, подстройка под голоса, выход AirPlay, переключатель языка"></p>
 
-<p align="center"><b><a href="https://github.com/pwrlight/NoiseBorder/releases/download/v0.2.0/NoiseBorder-0.2.0.dmg">⬇ Скачать NoiseBorder 0.2.0 (DMG)</a></b><br>macOS 13+ · Apple Silicon и Intel · <a href="https://github.com/pwrlight/NoiseBorder/releases">все версии</a> · первый запуск: см. <a href="#установка">Установка</a></p>
+<p align="center"><b><a href="https://github.com/pwrlight/NoiseBorder/releases/download/v0.3.0/NoiseBorder-0.3.0.dmg">⬇ Скачать NoiseBorder 0.3.0 (DMG)</a></b><br>macOS 13+ · Apple Silicon и Intel · <a href="https://github.com/pwrlight/NoiseBorder/releases">все версии</a> · первый запуск: см. <a href="#установка">Установка</a></p>
 
 Небольшое приложение для строки меню macOS. Играет **шумовую завесу** (речевой, белый, розовый или коричневый шум) на **AirPlay-приёмник**: роутер с AirPlay, колонку, HomePod. Нужно, чтобы маскировать разговоры в офисе.
 

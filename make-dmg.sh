@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-export VERSION="${VERSION:-0.2.0}"
+export VERSION="${VERSION:-0.3.0}"
 ./build-app.sh
 
 STAGE="build/dmg"
