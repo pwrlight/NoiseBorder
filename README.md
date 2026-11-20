@@ -4,7 +4,7 @@
 
 <p align="center"><img src="docs/screenshot.png" width="386" alt="NoiseBorder menu bar window: noise type, AirPlay receiver volume, AirPlay output, language switch"></p>
 
-<p align="center"><b><a href="https://github.com/pwrlight/NoiseBorder/releases/download/v0.1.0/NoiseBorder-0.1.0.dmg">⬇ Download NoiseBorder 0.1.0 (DMG)</a></b><br>macOS 13+ · Apple Silicon &amp; Intel · <a href="https://github.com/pwrlight/NoiseBorder/releases">all releases</a> · first launch: see <a href="#install">Install</a></p>
+<p align="center"><b><a href="https://github.com/pwrlight/NoiseBorder/releases/download/v0.2.0/NoiseBorder-0.2.0.dmg">⬇ Download NoiseBorder 0.2.0 (DMG)</a></b><br>macOS 13+ · Apple Silicon &amp; Intel · <a href="https://github.com/pwrlight/NoiseBorder/releases">all releases</a> · first launch: see <a href="#install">Install</a></p>
 
 A tiny macOS menu bar app that plays a **noise barrier** (speech-shaped, white, pink or brown noise) to an **AirPlay receiver** — a router with AirPlay, a speaker, a HomePod — to mask conversations in an office.
 
@@ -24,6 +24,8 @@ Requires macOS 13 or newer. The build is universal (Apple Silicon and Intel).
 
 - **Noise type:** Speech (default), White, Pink, Brown. *Speech* is pink noise with bass below ~150 Hz and treble above ~5 kHz cut, so its spectrum resembles speech and masks it best.
 - **Volume:** once a receiver is chosen, the slider controls that receiver's own volume (the same one as in the AirPlay menu). Start low and raise it until nearby speech stops being intelligible; good masking is barely noticeable.
+- **Tone:** darker ↔ brighter. Brighter adds energy around 1.5–6 kHz, where raised and especially female voices carry their intelligibility; darker is easier on the ears. Start at 0 and go up only if voices still cut through.
+- The noise fades in over 9 seconds when switched on and after a tone or type change.
 - If the receiver disappears while playing, the noise stops instead of falling back to the Mac speakers.
 
 ## How it works
