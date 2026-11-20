@@ -35,6 +35,20 @@ Requires macOS 13 or newer. The build is universal (Apple Silicon and Intel).
 - Tested on the author's setup only: macOS 26, one AirPlay-capable router. A TV that accepts AirPlay video only played nothing. The Intel slice builds but has not been run on Intel hardware.
 - Ad-hoc signed, not notarized (see Install).
 
+## Uninstall
+
+1. Turn off **Launch at login** in the app window (so it removes itself from login items), then press **Quit**.
+   If you forgot: *System Settings → General → Login Items*.
+2. Move `NoiseBorder.app` from Applications to the Trash.
+3. Remove the leftover data: the noise cache (up to ~46 MB if you tried all four noise types) and the preferences.
+
+```bash
+rm -rf ~/Library/Application\ Support/NoiseBorder
+defaults delete app.noiseborder.NoiseBorder
+```
+
+The app changes nothing else: your AirPlay settings and the receiver's volume stay as they are.
+
 ## Build
 
 Command Line Tools are enough (full Xcode is not required).
