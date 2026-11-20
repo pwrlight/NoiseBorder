@@ -15,7 +15,24 @@ public struct RenderOptions {
     /// Целевой уровень RMS в dBFS. Не LUFS и без A-взвешивания: простая и повторяемая нормализация.
     public var targetRMSdBFS: Double = -32
     public var seed: UInt64 = 1
+    /// Тембр: подъём (или спад) в полосе разборчивости речи с пиком около 3 кГц, в дБ.
+    /// Для речевого шума при подъёме ещё и раздвигается верхний срез с 5 до 8 кГц:
+    /// громкая и особенно женская речь «прорезается» именно в 2–6 кГц.
+    public var presenceDB: Double = 0
     public init() {}
+
+    /// Верхний срез речевого шума: 5 кГц по умолчанию, до 8 кГц на максимальной яркости.
+    public var speechLowpassHz: Double { 5000 + max(0, min(presenceDB, Tone.maximum)) / Tone.maximum * 3000 }
+}
+
+/// Шаги регулятора тембра (дБ в полосе разборчивости).
+public enum Tone {
+    public static let steps: [Double] = [-6, -3, 0, 3, 6, 9]
+    public static let `default`: Double = 0
+    public static var maximum: Double { steps.last! }
+    public static func nearestIndex(_ db: Double) -> Int {
+        steps.indices.min { abs(steps[$0] - db) < abs(steps[$1] - db) } ?? 2
+    }
 }
 
 /// Рендер бесшовных стереофонических шумовых петель. Каналы независимы (шире и приятнее на слух).
@@ -52,7 +69,10 @@ public enum NoiseRenderer {
         var chain: [Biquad] = Biquad.highpass(freq: 20, rate: o.sampleRate, stages: 1)
         if type == .speech {
             chain += Biquad.highpass(freq: 150, rate: o.sampleRate, stages: 2)
-            chain += Biquad.lowpass(freq: 5000, rate: o.sampleRate, stages: 2)
+            chain += Biquad.lowpass(freq: o.speechLowpassHz, rate: o.sampleRate, stages: 2)
+        }
+        if o.presenceDB != 0 {
+            chain.append(Biquad.peaking(freq: 3000, q: 0.7, gainDB: o.presenceDB, rate: o.sampleRate))
         }
         for i in 0..<total {
             var v = s[i]
@@ -138,6 +158,21 @@ struct Biquad {
         }
         f.a1 = -2 * c / a0
         f.a2 = (1 - alpha) / a0
+        return f
+    }
+    /// Колокол (RBJ peaking EQ).
+    static func peaking(freq: Double, q: Double, gainDB: Double, rate: Int) -> Biquad {
+        let a = pow(10, gainDB / 40)
+        let w0 = 2 * Double.pi * freq / Double(rate)
+        let alpha = sin(w0) / (2 * q)
+        let c = cos(w0)
+        let a0 = 1 + alpha / a
+        var f = Biquad()
+        f.b0 = (1 + alpha * a) / a0
+        f.b1 = -2 * c / a0
+        f.b2 = (1 - alpha * a) / a0
+        f.a1 = -2 * c / a0
+        f.a2 = (1 - alpha / a) / a0
         return f
     }
     static func highpass(freq: Double, rate: Int, stages: Int) -> [Biquad] {

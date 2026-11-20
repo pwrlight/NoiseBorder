@@ -22,6 +22,7 @@ enum Str {
     case title, volume, channelVolume, chooseReceiverHint, airplayOutput
     case preparing, playingAirPlay, playingMac, off, launchAtLogin, quit, language
     case routeLost, prepareFailed, loginUnavailable
+    case tone, darker, brighter
 }
 
 func tr(_ s: Str, _ l: Language) -> String {
@@ -47,6 +48,9 @@ func tr(_ s: Str, _ l: Language) -> String {
                               "AirPlay receiver disconnected, noise stopped")
     case .prepareFailed: return p("Не удалось подготовить шум: ", "Could not prepare noise: ")
     case .loginUnavailable: return p("Автозапуск недоступен: ", "Launch at login is unavailable: ")
+    case .tone: return p("Тембр", "Tone")
+    case .darker: return p("темнее", "darker")
+    case .brighter: return p("ярче (женские голоса)", "brighter (female voices)")
     }
 }
 

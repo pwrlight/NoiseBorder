@@ -7,13 +7,20 @@ import NoiseKit
 /// действует только на звук этого приложения, а системный вывод Mac не меняется.
 @MainActor
 final class NoisePlayer: ObservableObject {
-    private enum Key { static let type = "noiseType", volume = "volume", language = "language" }
+    private enum Key { static let type = "noiseType", volume = "volume", language = "language", tone = "tone" }
     /// Версия рендера в имени файла кэша: смена параметров генератора инвалидирует кэш.
-    private nonisolated static let cacheVersion = "v1-18dbfs"
+    private nonisolated static let cacheVersion = "v2-18dbfs"
 
     @Published var type: NoiseType {
         didSet {
             UserDefaults.standard.set(type.rawValue, forKey: Key.type)
+            if isPlaying { restartItems() }
+        }
+    }
+    /// Тембр в дБ (шаги `Tone.steps`). Смена перерисовывает шум и подменяет его на лету.
+    @Published var tone: Double {
+        didSet {
+            UserDefaults.standard.set(tone, forKey: Key.tone)
             if isPlaying { restartItems() }
         }
     }
@@ -22,7 +29,10 @@ final class NoisePlayer: ObservableObject {
             let v = VolumePolicy.clamp(volume)
             if v != volume { volume = v }  // повторно didSet не вызывается
             UserDefaults.standard.set(v, forKey: Key.volume)
-            if isPlaying, fadeTask == nil, !channelAvailable { player.volume = v }
+            if isPlaying, !channelAvailable {
+                cancelRamp()
+                if fadeTask == nil { player.volume = v }
+            }
         }
     }
     @Published private(set) var isPlaying = false
@@ -42,6 +52,12 @@ final class NoisePlayer: ObservableObject {
     let player = AVQueuePlayer()
     private lazy var channel = ChannelVolume(player: player)
     private var fadeTask: Task<Void, Never>?
+    /// Плавное нарастание после старта и после смены тембра или типа.
+    private var rampTask: Task<Void, Never>?
+    private var rampUsesChannel = false
+    private var rampTarget: Float = 0
+    /// Длительность нарастания, секунды.
+    private let rampSeconds: Double = 9
     private var lostRouteTask: Task<Void, Never>?
     private var startTask: Task<Void, Never>?
     private var monitorTask: Task<Void, Never>?
@@ -51,6 +67,8 @@ final class NoisePlayer: ObservableObject {
         let d = UserDefaults.standard
         type = NoiseType(rawValue: d.string(forKey: Key.type) ?? "") ?? .speech
         language = Language(rawValue: d.string(forKey: Key.language) ?? "") ?? .systemDefault
+        tone = d.object(forKey: Key.tone) == nil ? Tone.default : Tone.steps[Tone.nearestIndex(d.double(forKey: Key.tone))]
+        Self.removeStaleCache()
         volume = d.object(forKey: Key.volume) == nil ? VolumePolicy.default : VolumePolicy.clamp(d.float(forKey: Key.volume))
         player.allowsExternalPlayback = true
         player.volume = 0
@@ -75,15 +93,15 @@ final class NoisePlayer: ObservableObject {
         startTask = Task {
             defer { startTask = nil; isPreparing = false }
             do {
-                let url = try await Self.ensureFile(for: type)
+                let url = try await Self.ensureFile(for: type, tone: tone)
                 guard !Task.isCancelled else { return }
                 player.removeAllItems()
                 enqueue(url); enqueue(url)
-                player.volume = 0
+                refreshChannel()
+                rampIn()
                 player.play()
                 isPlaying = true
                 startMonitor()
-                fade(to: targetPlayerVolume)
             } catch {
                 message = .prepareFailed(error.localizedDescription)
             }
@@ -97,11 +115,15 @@ final class NoisePlayer: ObservableObject {
         self.message = message
         guard isPlaying else { return }
         isPlaying = false
+        // Остановка посреди нарастания: вернуть приёмнику громкость пользователя уже после паузы.
+        let restoreChannel: Float? = (rampTask != nil && rampUsesChannel) ? rampTarget : nil
+        cancelRamp()
         let finish = { [weak self] in
             self?.fadeTask = nil
             self?.player.pause()
             self?.player.removeAllItems()
             self?.player.volume = 0
+            if let v = restoreChannel { self?.channel.set(v) }
         }
         if shouldFade {
             fade(to: 0, then: finish)
@@ -123,15 +145,63 @@ final class NoisePlayer: ObservableObject {
         let available = channel.canSet
         if available != channelAvailable {
             channelAvailable = available
-            if isPlaying, fadeTask == nil { player.volume = targetPlayerVolume }
+            if isPlaying, fadeTask == nil, rampTask == nil { player.volume = targetPlayerVolume }
         }
-        if available, let v = channel.value, abs(v - channelVolume) > 0.001 { channelVolume = v }
+        // Во время нарастания ползунок показывает целевую громкость, а не промежуточную.
+        if available, rampTask == nil, let v = channel.value, abs(v - channelVolume) > 0.001 { channelVolume = v }
     }
 
     func setChannelVolume(_ v: Float) {
         let c = min(max(v.isFinite ? v : 0, 0), 1)
+        cancelRamp()
         channelVolume = c
         channel.set(c)
+    }
+
+    // MARK: Нарастание
+
+    /// Уводит громкость в ноль и, как только воспроизведение реально началось, поднимает её до уровня пользователя.
+    /// На AirPlay-приёмнике с управляемой громкостью двигаем громкость приёмника: `player.volume` там не действует.
+    /// Иначе двигаем `player.volume`. Ждём старта, потому что AirPlay буферизует звук на 1–2 секунды.
+    private func rampIn() {
+        cancelRamp()
+        fadeTask?.cancel(); fadeTask = nil
+        let useChannel = channelAvailable
+        let target: Float = useChannel ? channelVolume : volume
+        rampUsesChannel = useChannel
+        rampTarget = target
+        if useChannel {
+            player.volume = 1
+            channel.set(0)
+        } else {
+            player.volume = 0
+        }
+        let seconds = rampSeconds
+        rampTask = Task { [weak self] in
+            for _ in 0..<100 {  // до 5 секунд ждём реального старта
+                guard let self, !Task.isCancelled else { return }
+                if self.player.timeControlStatus == .playing, self.player.currentTime().seconds > 0.05 { break }
+                try? await Task.sleep(nanoseconds: 50_000_000)
+            }
+            let steps = 30
+            for i in 1...steps {
+                try? await Task.sleep(nanoseconds: UInt64(seconds / Double(steps) * 1_000_000_000))
+                guard let self, !Task.isCancelled else { return }
+                let x = Float(i) / Float(steps)
+                if useChannel {
+                    self.channel.set(target * x)          // шкала приёмника уже близка к восприятию
+                } else {
+                    self.player.volume = target * x * x   // player.volume линейный по амплитуде
+                }
+            }
+            guard let self, !Task.isCancelled else { return }
+            self.rampTask = nil
+        }
+    }
+
+    private func cancelRamp() {
+        rampTask?.cancel()
+        rampTask = nil
     }
 
     // MARK: Внутреннее
@@ -153,9 +223,14 @@ final class NoisePlayer: ObservableObject {
     }
 
     private func restartItems() {
-        let wanted = type
+        let wanted = type, wantedTone = tone
         Task {
-            guard let url = try? await Self.ensureFile(for: wanted), isPlaying, type == wanted else { return }
+            guard let url = try? await Self.ensureFile(for: wanted, tone: wantedTone),
+                  isPlaying, type == wanted, tone == wantedTone else { return }
+            // Если идёт нарастание на приёмнике, сначала вернуть цель, чтобы rampIn взял верный уровень.
+            if rampTask != nil, rampUsesChannel { channelVolume = rampTarget }
+            refreshChannel()
+            rampIn()                   // старый шум сразу в тишину, новый нарастает
             player.removeAllItems()
             enqueue(url); enqueue(url)
             player.play()
@@ -169,11 +244,16 @@ final class NoisePlayer: ObservableObject {
         let wanted = type
         NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
             Task { @MainActor in
-                guard let self, self.isPlaying, self.type == wanted else { return }
+                guard let self, self.isPlaying, self.type == wanted, self.url(matches: url) else { return }
                 self.enqueue(url)
             }
         }
         player.insert(item, after: nil)
+    }
+
+    /// Текущий элемент очереди играет тот же файл (тип и тембр не менялись).
+    private func url(matches url: URL) -> Bool {
+        (player.currentItem?.asset as? AVURLAsset)?.url == url
     }
 
     /// Маршрут AirPlay определяем по выбранным устройствам в `AVOutputContext`: на роутере (аудио AirPlay)
@@ -224,13 +304,23 @@ final class NoisePlayer: ObservableObject {
         return dir
     }
 
+    /// Удаляет файлы кэша от прошлых версий генератора, чтобы они не копились.
+    nonisolated static func removeStaleCache() {
+        guard let dir = try? cacheDirectory(),
+              let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else { return }
+        for f in files where !f.lastPathComponent.hasSuffix("-\(cacheVersion).wav") {
+            try? FileManager.default.removeItem(at: f)
+        }
+    }
+
     /// Рендерит бесшовный шум в кэш при первом использовании. Дальше берёт готовый файл.
-    nonisolated static func ensureFile(for type: NoiseType) async throws -> URL {
-        let url = try cacheDirectory().appendingPathComponent("\(type.rawValue)-\(cacheVersion).wav")
+    nonisolated static func ensureFile(for type: NoiseType, tone: Double) async throws -> URL {
+        let url = try cacheDirectory().appendingPathComponent("\(type.rawValue)-t\(Int(tone))-\(cacheVersion).wav")
         if FileManager.default.fileExists(atPath: url.path) { return url }
         return try await Task.detached(priority: .userInitiated) {
             var o = RenderOptions()
             o.targetRMSdBFS = -18
+            o.presenceDB = tone
             let tmp = url.appendingPathExtension("tmp")
             try WavWriter.write(NoiseRenderer.render(type, options: o), sampleRate: o.sampleRate, to: tmp)
             _ = try? FileManager.default.removeItem(at: url)

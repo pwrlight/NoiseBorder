@@ -135,6 +135,31 @@ for type in NoiseType.allCases {
     check("детерминизм по seed", again[0] == l, "одинаковый результат")
 }
 
+print("\n== тембр (речевой шум)")
+// Полоса разборчивости 2–4 кГц относительно 500 Гц: «ярче» поднимает её, «темнее» опускает.
+func clarity(_ db: Double) -> Double {
+    var t = o
+    t.presenceDB = db
+    let b = octaveBandsDB(NoiseRenderer.render(.speech, options: t)[0], rate: rate, centers: [500, 2000, 4000])
+    return (b[1] + b[2]) / 2 - b[0]
+}
+let c0 = clarity(0), cUp = clarity(6), cDown = clarity(-6)
+check("ярче +6 дБ поднимает 2–4 кГц", cUp - c0 > 4, "\(f(cUp - c0)) дБ")
+check("темнее −6 дБ опускает 2–4 кГц", c0 - cDown > 3, "\(f(c0 - cDown)) дБ")
+for gain in [Tone.steps.first!, Tone.maximum] {
+    var t = o
+    t.presenceDB = gain
+    let ch = NoiseRenderer.render(.speech, options: t)
+    let lvl = db(rms(ch[0][...]))
+    let pk = ch[0].map { abs($0) }.max()!
+    check("тембр \(f(gain)): уровень и пики", abs(lvl - o.targetRMSdBFS) < 0.1 && pk < 0.5, "RMS \(f(lvl)), peak \(f(Double(pk)))")
+    let diffs = zip(ch[0].dropFirst(), ch[0]).map { Double($0 - $1) }
+    let sd = (diffs.reduce(0) { $0 + $1 * $1 } / Double(diffs.count)).squareRoot()
+    let seam = abs(Double(ch[0][0] - ch[0][ch[0].count - 1]))
+    check("тембр \(f(gain)): шов петли", seam < 4.5 * sd, "скачок \(f(seam / sd))σ")
+}
+check("ближайший шаг тембра", Tone.steps[Tone.nearestIndex(4)] == 3 && Tone.steps[Tone.nearestIndex(100)] == Tone.maximum, "4 -> 3, 100 -> max")
+
 print("\n== громкость")
 check("потолок", VolumePolicy.clamp(1.0) == VolumePolicy.maximum, "1.0 -> \(VolumePolicy.clamp(1.0))")
 check("не ниже нуля", VolumePolicy.clamp(-0.3) == 0, "-0.3 -> \(VolumePolicy.clamp(-0.3))")

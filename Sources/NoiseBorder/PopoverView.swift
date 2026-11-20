@@ -6,6 +6,8 @@ struct PopoverView: View {
     @EnvironmentObject var noise: NoisePlayer
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var loginError: String?
+    /// Положение ползунка тембра во время перетаскивания; шум перерисовывается только когда ползунок отпущен.
+    @State private var toneIndex: Double?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -20,13 +22,9 @@ struct PopoverView: View {
                 .labelsHidden()
             }
 
-            Picker("", selection: $noise.type) {
-                ForEach(NoiseType.allCases, id: \.self) { Text($0.title(noise.language)).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .controlSize(.small)
-            .labelsHidden()
-            .frame(maxWidth: .infinity)
+            SegmentedButtons(items: NoiseType.allCases, selection: $noise.type) { $0.title(noise.language) }
+
+            toneControl
 
             volumeControl
 
@@ -53,13 +51,8 @@ struct PopoverView: View {
                 Button(noise.t(.quit)) { NSApplication.shared.terminate(nil) }
                     .keyboardShortcut("q")
                 Spacer()
-                Picker(noise.t(.language), selection: $noise.language) {
-                    ForEach(Language.allCases) { Text($0.label).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .controlSize(.small)
-                .labelsHidden()
-                .frame(width: 90)
+                SegmentedButtons(items: Language.allCases, selection: $noise.language) { $0.label }
+                    .frame(width: 90)
             }
         }
         .onAppear { noise.refreshChannel() }
@@ -67,6 +60,32 @@ struct PopoverView: View {
         .padding(16)
         .frame(width: 340)
         .fixedSize(horizontal: true, vertical: true)
+    }
+
+    private var shownToneIndex: Double { toneIndex ?? Double(Tone.nearestIndex(noise.tone)) }
+
+    @ViewBuilder private var toneControl: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(noise.t(.tone))
+                Spacer()
+                let db = Tone.steps[Int(shownToneIndex)]
+                Text(db == 0 ? "0 dB" : String(format: "%+.0f dB", db)).monospacedDigit().foregroundStyle(.secondary)
+            }
+            Slider(value: Binding(get: { shownToneIndex }, set: { toneIndex = $0.rounded() }),
+                   in: 0...Double(Tone.steps.count - 1), step: 1) { editing in
+                if !editing, let i = toneIndex {
+                    noise.tone = Tone.steps[Int(i)]
+                    toneIndex = nil
+                }
+            }
+            HStack {
+                Text(noise.t(.darker))
+                Spacer()
+                Text(noise.t(.brighter))
+            }
+            .font(.caption).foregroundStyle(.secondary)
+        }
     }
 
     @ViewBuilder private var volumeControl: some View {
@@ -126,5 +145,37 @@ struct PopoverView: View {
             loginError = error.localizedDescription
         }
         launchAtLogin = SMAppService.mainApp.status == .enabled
+    }
+}
+
+/// Свой сегментный переключатель из кнопок. Системный `Picker(.segmented)` на новой macOS при перерисовке
+/// временно становится шире окна `MenuBarExtra` и сдвигает всё содержимое за край. Этот делит ширину поровну
+/// и никогда её не превышает.
+struct SegmentedButtons<Item: Hashable>: View {
+    let items: [Item]
+    @Binding var selection: Item
+    let title: (Item) -> String
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(items, id: \.self) { item in
+                let on = item == selection
+                Button { selection = item } label: {
+                    Text(title(item))
+                        .font(.system(size: 11, weight: on ? .semibold : .regular))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 3)
+                        .foregroundStyle(on ? Color.white : Color.primary)
+                        .background(RoundedRectangle(cornerRadius: 5).fill(on ? Color.accentColor : Color.clear))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(2)
+        .frame(maxWidth: .infinity)
+        .background(RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(0.08)))
     }
 }
