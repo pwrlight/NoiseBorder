@@ -1,12 +1,12 @@
 # NoiseBorder
 
+**English** · [Русский](README.ru.md)
+
 <p align="center"><img src="docs/screenshot.png" width="386" alt="NoiseBorder menu bar window: noise type, AirPlay receiver volume, AirPlay output, language switch"></p>
 
 A tiny macOS menu bar app that plays a **noise barrier** (speech-shaped, white, pink or brown noise) to an **AirPlay receiver** — a router with AirPlay, a speaker, a HomePod — to mask conversations in an office.
 
 The noise goes to AirPlay only for this app. Everything else on your Mac (YouTube, calls, music) keeps playing on its own output.
-
-*Русский: небольшое menu bar приложение для macOS. Играет шумовую завесу (речевой, белый, розовый или коричневый шум) на AirPlay-приёмник, например роутер с AirPlay, чтобы маскировать разговоры в офисе. Остальной звук Mac идёт на свой выход. Интерфейс двуязычный (RU/EN), переключатель в окне приложения.*
 
 ## Install
 
