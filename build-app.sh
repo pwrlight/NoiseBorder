@@ -15,7 +15,19 @@ for ARCH in arm64 x86_64; do
 done
 
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+
+# Иконка: рисуется скриптом в 1024 px, нарезается на размеры iconset и собирается в .icns.
+ICONSET="build/AppIcon.iconset"
+rm -rf "$ICONSET" && mkdir -p "$ICONSET"
+swift scripts/make-icon.swift "build/icon-1024.png" 1024 >/dev/null
+for SZ in 16 32 128 256 512; do
+  sips -z $SZ $SZ "build/icon-1024.png" --out "$ICONSET/icon_${SZ}x${SZ}.png" >/dev/null
+  sips -z $((SZ*2)) $((SZ*2)) "build/icon-1024.png" --out "$ICONSET/icon_${SZ}x${SZ}@2x.png" >/dev/null
+done
+iconutil -c icns -o "$APP/Contents/Resources/AppIcon.icns" "$ICONSET"
+rm -rf "$ICONSET"
+
 lipo -create "${BINS[@]}" -output "$APP/Contents/MacOS/NoiseBorder"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
@@ -27,6 +39,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleDisplayName</key><string>NoiseBorder</string>
   <key>CFBundleIdentifier</key><string>app.noiseborder.NoiseBorder</string>
   <key>CFBundleExecutable</key><string>NoiseBorder</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleVersion</key><string>1</string>
