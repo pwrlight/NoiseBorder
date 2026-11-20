@@ -7,7 +7,10 @@ import NoiseKit
 /// действует только на звук этого приложения, а системный вывод Mac не меняется.
 @MainActor
 final class NoisePlayer: ObservableObject {
-    private enum Key { static let type = "noiseType", volume = "volume", language = "language", tone = "tone" }
+    private enum Key {
+        static let type = "noiseType", volume = "volume", language = "language", tone = "tone"
+        static let adaptive = "adaptive", headroom = "adaptiveHeadroom"
+    }
     /// Версия рендера в имени файла кэша: смена параметров генератора инвалидирует кэш.
     private nonisolated static let cacheVersion = "v2-18dbfs"
 
@@ -29,6 +32,7 @@ final class NoisePlayer: ObservableObject {
             let v = VolumePolicy.clamp(volume)
             if v != volume { volume = v }  // повторно didSet не вызывается
             UserDefaults.standard.set(v, forKey: Key.volume)
+            gain.relearn()
             if isPlaying, !channelAvailable {
                 cancelRamp()
                 if fadeTask == nil { player.volume = v }
@@ -49,6 +53,21 @@ final class NoisePlayer: ObservableObject {
     @Published private(set) var channelAvailable = false
     @Published private(set) var channelVolume: Float = 0
 
+    /// Подстройка под голоса по микрофону. По умолчанию выключена; микрофон работает только пока играет шум.
+    @Published var adaptive: Bool {
+        didSet {
+            UserDefaults.standard.set(adaptive, forKey: Key.adaptive)
+            if adaptive, isPlaying { startMic() } else if !adaptive { stopMic() }
+        }
+    }
+    /// Наибольшая прибавка к громкости шума, дБ (шаги `headroomSteps`).
+    @Published var headroomDB: Double {
+        didSet { UserDefaults.standard.set(headroomDB, forKey: Key.headroom) }
+    }
+    static let headroomSteps: [Double] = [3, 6, 9, 12]
+    /// Текущая прибавка для показа, с шагом 0.5 дБ.
+    @Published private(set) var boostDB: Double = 0
+
     let player = AVQueuePlayer()
     private lazy var channel = ChannelVolume(player: player)
     private var fadeTask: Task<Void, Never>?
@@ -62,6 +81,14 @@ final class NoisePlayer: ObservableObject {
     private var startTask: Task<Void, Never>?
     private var monitorTask: Task<Void, Never>?
     private var bag = Set<AnyCancellable>()
+    private let mic = MicMonitor()
+    private var gain = AdaptiveGain()
+    /// Сколько прибавки сейчас добавлено к громкости приёмника (в единицах его шкалы 0...1).
+    private var appliedChannelDelta: Float = 0
+    private var lastBoostSet = Date.distantPast
+    /// Допущение: шкала громкости AirPlay-приёмника 0...1 линейна в децибелах на 30 дБ (так в RAOP).
+    /// Для конкретного роутера может отличаться: потолок прибавки подбирается на слух.
+    private static let channelDBRange: Double = 30
 
     init() {
         let d = UserDefaults.standard
@@ -70,6 +97,9 @@ final class NoisePlayer: ObservableObject {
         tone = d.object(forKey: Key.tone) == nil ? Tone.default : Tone.steps[Tone.nearestIndex(d.double(forKey: Key.tone))]
         Self.removeStaleCache()
         volume = d.object(forKey: Key.volume) == nil ? VolumePolicy.default : VolumePolicy.clamp(d.float(forKey: Key.volume))
+        adaptive = d.bool(forKey: Key.adaptive)
+        let h = d.double(forKey: Key.headroom)
+        headroomDB = Self.headroomSteps.contains(h) ? h : 6
         player.allowsExternalPlayback = true
         player.volume = 0
 
@@ -102,6 +132,7 @@ final class NoisePlayer: ObservableObject {
                 player.play()
                 isPlaying = true
                 startMonitor()
+                if adaptive { startMic() }
             } catch {
                 message = .prepareFailed(error.localizedDescription)
             }
@@ -115,8 +146,11 @@ final class NoisePlayer: ObservableObject {
         self.message = message
         guard isPlaying else { return }
         isPlaying = false
-        // Остановка посреди нарастания: вернуть приёмнику громкость пользователя уже после паузы.
-        let restoreChannel: Float? = (rampTask != nil && rampUsesChannel) ? rampTarget : nil
+        // Остановка посреди нарастания или с прибавкой: вернуть приёмнику громкость пользователя уже после паузы.
+        let restoreChannel: Float? = (rampTask != nil && rampUsesChannel) ? rampTarget
+            : (appliedChannelDelta != 0 ? channelVolume : nil)
+        mic.stop()
+        resetBoost()
         cancelRamp()
         let finish = { [weak self] in
             self?.fadeTask = nil
@@ -148,14 +182,92 @@ final class NoisePlayer: ObservableObject {
             if isPlaying, fadeTask == nil, rampTask == nil { player.volume = targetPlayerVolume }
         }
         // Во время нарастания ползунок показывает целевую громкость, а не промежуточную.
-        if available, rampTask == nil, let v = channel.value, abs(v - channelVolume) > 0.001 { channelVolume = v }
+        // С прибавкой ползунок показывает громкость пользователя без неё. Громкость поменяли в другом месте
+        // (меню AirPlay): это новая громкость пользователя.
+        // Пока прибавка меняется, приёмник может отдавать громкость с опозданием: сверяем только спустя 2 с
+        // после нашей последней установки, иначе своя же прибавка ушла бы в громкость пользователя.
+        let settled = appliedChannelDelta == 0 || Date().timeIntervalSince(lastBoostSet) > 2
+        if available, rampTask == nil, settled, let v = channel.value {
+            let tolerance: Float = appliedChannelDelta == 0 ? 0.001 : 0.02
+            if abs(v - (channelVolume + appliedChannelDelta)) > tolerance {
+                channelVolume = v
+                appliedChannelDelta = 0
+                gain.relearn()
+            }
+        }
     }
 
     func setChannelVolume(_ v: Float) {
         let c = min(max(v.isFinite ? v : 0, 0), 1)
         cancelRamp()
         channelVolume = c
+        resetBoost()
         channel.set(c)
+    }
+
+    // MARK: Подстройка под голоса
+
+    private func startMic() {
+        guard !mic.isRunning else { return }
+        Task {
+            guard await MicMonitor.requestAccess() else {
+                adaptive = false
+                message = .micDenied
+                return
+            }
+            guard adaptive, isPlaying, !mic.isRunning else { return }
+            gain.relearn()
+            do {
+                try mic.start { [weak self] power, dt in self?.micFrame(power: power, dt: dt) }
+            } catch {
+                adaptive = false
+                message = .micFailed("\(error)")
+            }
+        }
+    }
+
+    private func stopMic() {
+        mic.stop()
+        let hadBoost = appliedChannelDelta != 0 || boostDB != 0
+        resetBoost()
+        guard isPlaying, hadBoost, rampTask == nil, fadeTask == nil else { return }
+        if channelAvailable { channel.set(channelVolume) } else { player.volume = volume }
+    }
+
+    private func resetBoost() {
+        gain.relearn()
+        appliedChannelDelta = 0
+        if boostDB != 0 { boostDB = 0 }
+    }
+
+    /// Кадр уровня с микрофона: пересчитать прибавку и применить её к громкости приёмника или плеера.
+    private func micFrame(power: Double, dt: Double) {
+        guard isPlaying, adaptive else { return }
+        // Во время нарастания громкость шума меняем не мы: прибавку не даём, фон переучивается.
+        let busy = rampTask != nil || fadeTask != nil
+        let room: Double
+        if busy {
+            room = 0
+        } else if channelAvailable {
+            room = Double(1 - channelVolume) * Self.channelDBRange
+        } else {
+            room = volume > 0 ? 20 * log10(Double(VolumePolicy.maximum / volume)) : 0
+        }
+        let b = gain.update(power: power, dt: dt, maxBoostDB: max(0, min(headroomDB, room)))
+        let shown = (b * 2).rounded() / 2
+        if shown != boostDB { boostDB = shown }
+        guard !busy else { return }
+        if channelAvailable {
+            let delta = Float(b / Self.channelDBRange)
+            // Шаг 0.01 шкалы ≈ 0.3 дБ: на слух не заметно, а приёмник не дёргаем 10 раз в секунду.
+            if abs(delta - appliedChannelDelta) >= 0.01 || (delta == 0 && appliedChannelDelta != 0) {
+                appliedChannelDelta = delta
+                lastBoostSet = Date()
+                channel.set(min(channelVolume + delta, 1))
+            }
+        } else {
+            player.volume = min(volume * Float(pow(10, b / 20)), VolumePolicy.maximum)
+        }
     }
 
     // MARK: Нарастание
@@ -170,6 +282,7 @@ final class NoisePlayer: ObservableObject {
         let target: Float = useChannel ? channelVolume : volume
         rampUsesChannel = useChannel
         rampTarget = target
+        resetBoost()
         if useChannel {
             player.volume = 1
             channel.set(0)

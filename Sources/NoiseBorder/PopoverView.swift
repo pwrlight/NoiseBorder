@@ -28,6 +28,8 @@ struct PopoverView: View {
 
             volumeControl
 
+            adaptiveControl
+
             HStack {
                 Text(noise.t(.airplayOutput))
                 Spacer()
@@ -107,6 +109,26 @@ struct PopoverView: View {
                 Slider(value: Binding(get: { Double(noise.volume) }, set: { noise.volume = Float($0) }),
                        in: 0...Double(VolumePolicy.maximum))
                 Text(noise.t(.chooseReceiverHint))
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    @ViewBuilder private var adaptiveControl: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle(noise.t(.adaptive), isOn: $noise.adaptive)
+            if noise.adaptive {
+                HStack {
+                    Text(noise.t(.headroom)).font(.caption)
+                    Spacer()
+                    if noise.isPlaying {
+                        Text(noise.t(.boostNow) + String(format: " +%.1f dB", noise.boostDB))
+                            .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                    }
+                }
+                SegmentedButtons(items: NoisePlayer.headroomSteps, selection: $noise.headroomDB) { "+\(Int($0)) dB" }
+                Text(noise.t(.adaptiveHint))
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }

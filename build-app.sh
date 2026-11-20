@@ -46,6 +46,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
+  <key>NSMicrophoneUsageDescription</key><string>Подстройка громкости шума под голоса рядом: считается только уровень звука, ничего не записывается. / Adjusts noise volume to nearby voices: only the sound level is measured, nothing is recorded.</string>
 </dict>
 </plist>
 PLIST

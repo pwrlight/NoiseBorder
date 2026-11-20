@@ -160,6 +160,109 @@ for gain in [Tone.steps.first!, Tone.maximum] {
 }
 check("ближайший шаг тембра", Tone.steps[Tone.nearestIndex(4)] == 3 && Tone.steps[Tone.nearestIndex(100)] == Tone.maximum, "4 -> 3, 100 -> max")
 
+print("\n== подстройка под голоса (микрофон)")
+// Модель комнаты: микрофон слышит фон помещения, наш шум (с задержкой AirPlay 2 с) и речь соседей.
+// Речь: слоги по 200 мс с заполнением ~70% и паузы 0.5 с каждые ~3 с.
+struct Room {
+    var ambient = 0.3, noise = 1.0
+    var latency = 2.0
+}
+func simulate(_ room: Room, seconds: Double, maxBoost: Double = 12,
+              speech: (Double) -> Double, gain: inout AdaptiveGain, seed: UInt64 = 7) -> [Double] {
+    let dt = 0.1
+    var state = seed
+    func uniform() -> Double {  // детерминированный ГПСЧ (LCG), чтобы проверка повторялась
+        state = state &* 6364136223846793005 &+ 1442695040888963407
+        return Double(state >> 11) / Double(1 << 53)
+    }
+    var applied: [Double] = []
+    var out: [Double] = []
+    let lag = Int(room.latency / dt)
+    var t = 0.0
+    var syllableOn = true
+    while t < seconds {
+        if Int(t * 10) % 2 == 0 { syllableOn = uniform() < 0.7 }
+        let inPause = t.truncatingRemainder(dividingBy: 3) > 2.5
+        let sp = speech(t)
+        let g = applied.count > lag ? applied[applied.count - 1 - lag] : 0
+        var p = room.ambient + room.noise * pow(10, g / 10)
+        if sp > 0, syllableOn, !inPause { p += sp }
+        p *= pow(10, (uniform() - 0.5) * 0.6 / 10)  // ±0.3 дБ разброс кадра
+        let b = gain.update(power: p, dt: dt, maxBoostDB: maxBoost)
+        applied.append(b)
+        out.append(b)
+        t += dt
+    }
+    return out
+}
+func at(_ a: [Double], _ s: Double) -> Double { a[min(a.count - 1, Int(s * 10))] }
+func peak(_ a: [Double], from: Double, to: Double) -> Double { a[Int(from * 10)..<min(a.count, Int(to * 10))].max()! }
+let n0 = 1.3  // фон при нулевой прибавке в модели по умолчанию
+
+do {
+    var g = AdaptiveGain(); g.relearn()
+    let r = simulate(Room(), seconds: 600, speech: { _ in 0 }, gain: &g)
+    check("тишина: шум не раскачивается", peak(r, from: 30, to: 600) < 0.5, "максимум прибавки \(f(peak(r, from: 30, to: 600))) дБ за 10 мин")
+}
+do {
+    var g = AdaptiveGain(); g.relearn()
+    let r = simulate(Room(), seconds: 240, speech: { $0 >= 60 && $0 < 90 ? 10 * n0 : 0 }, gain: &g)
+    check("громкая речь (+10 дБ): прибавка растёт", at(r, 72) > 5, "через 12 с речи \(f(at(r, 72))) дБ")
+    let rise = zip(r.dropFirst(), r).map { $0 - $1 }.max()! * 10
+    check("плавный рост", rise <= 1.0001, "не быстрее \(f(rise)) дБ/с")
+    check("громкая речь: не выше уровня речи", peak(r, from: 0, to: 240) < 11.5, "максимум \(f(peak(r, from: 0, to: 240))) дБ")
+    check("после речи: плавно возвращается", at(r, 150) < 1 && at(r, 92) > 3, "через 2 с \(f(at(r, 92))) дБ, через 60 с \(f(at(r, 150))) дБ")
+    let jumps = zip(r.dropFirst(), r).map { abs($0 - $1) }.max()!
+    check("без скачков", jumps < 0.15, "максимальный шаг \(f(jumps)) дБ за 0.1 с")
+}
+do {
+    var g = AdaptiveGain(); g.relearn()
+    let r = simulate(Room(ambient: 0, noise: 1), seconds: 300, speech: { $0 >= 30 && $0 < 45 ? 30 : 0 }, gain: &g)
+    check("микрофон слышит только шум: нет самовозбуждения", at(r, 120) < 1 && peak(r, from: 120, to: 300) < 1,
+          "после речи через 75 с \(f(at(r, 120))) дБ, максимум потом \(f(peak(r, from: 120, to: 300))) дБ")
+}
+do {
+    var g = AdaptiveGain(); g.relearn()
+    let r = simulate(Room(), seconds: 260, speech: { $0 >= 60 && $0 < 240 ? 6.3 * n0 : 0 }, gain: &g)
+    let tail = r[Int(200 * 10)..<Int(238 * 10)].reduce(0, +) / Double(38 * 10)
+    check("долгий разговор 3 мин (+8 дБ): прибавка держится", tail > 4, "в среднем за последние 40 с \(f(tail)) дБ")
+}
+do {
+    var g = AdaptiveGain(); g.relearn()
+    let r = simulate(Room(ambient: 4, noise: 1), seconds: 240, speech: { $0 >= 30 && $0 < 50 ? 50 : 0 }, gain: &g)
+    check("громкий фон помещения: после речи возвращается", at(r, 150) < 1, "через 100 с \(f(at(r, 150))) дБ (пик \(f(peak(r, from: 0, to: 240))))")
+}
+do {
+    var g = AdaptiveGain(); g.relearn()
+    let r = simulate(Room(), seconds: 120, maxBoost: 3, speech: { $0 >= 30 && $0 < 90 ? 30 * n0 : 0 }, gain: &g)
+    check("потолок прибавки", peak(r, from: 0, to: 120) <= 3.0001, "максимум \(f(peak(r, from: 0, to: 120))) дБ при потолке 3")
+}
+do {
+    var g = AdaptiveGain(); g.relearn()
+    var room = Room()
+    var r = simulate(room, seconds: 60, speech: { _ in 0 }, gain: &g)
+    room.ambient = 0.3 + 3 * n0  // включили вентиляцию: фон +6 дБ навсегда
+    r = simulate(room, seconds: 300, speech: { _ in 0 }, gain: &g, seed: 9)
+    check("фон вырос навсегда: прибавка уходит", at(r, 180) < 1, "через 3 мин \(f(at(r, 180))) дБ (пик \(f(peak(r, from: 0, to: 300))))")
+}
+do {
+    var g = AdaptiveGain(); g.relearn()
+    _ = simulate(Room(), seconds: 30, speech: { $0 > 10 ? 30 : 0 }, gain: &g)
+    let b = g.update(power: 5, dt: 0.1, maxBoostDB: 0)
+    check("нарастание: прибавка сбрасывается", b == 0 && g.boostDB == 0, "\(b)")
+}
+do {
+    var m = LevelMeter(sampleRate: 48000)
+    func tone(_ hz: Double) -> [Double] {
+        let x = (0..<48000).map { Float(sin(2 * Double.pi * hz * Double($0) / 48000)) }
+        return x.withUnsafeBufferPointer { m.process($0) }
+    }
+    let k = tone(1000), lowHum = tone(50)
+    check("измеритель: кадры по 0.1 с", k.count == 10, "\(k.count) кадров за 1 с")
+    check("измеритель: речь проходит, гул 50 Гц нет", abs(db(k.last!.squareRoot() * 2.0.squareRoot())) < 1 && 10 * log10(lowHum.last! / k.last!) < -30,
+          "1 кГц \(f(10 * log10(k.last! * 2))) дБ, 50 Гц \(f(10 * log10(lowHum.last! / k.last!))) дБ относительно 1 кГц")
+}
+
 print("\n== громкость")
 check("потолок", VolumePolicy.clamp(1.0) == VolumePolicy.maximum, "1.0 -> \(VolumePolicy.clamp(1.0))")
 check("не ниже нуля", VolumePolicy.clamp(-0.3) == 0, "-0.3 -> \(VolumePolicy.clamp(-0.3))")

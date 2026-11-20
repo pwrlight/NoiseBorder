@@ -16,6 +16,8 @@ enum Language: String, CaseIterable, Identifiable {
 enum Notice: Equatable {
     case routeLost
     case prepareFailed(String)
+    case micDenied
+    case micFailed(String)
 }
 
 enum Str {
@@ -23,6 +25,7 @@ enum Str {
     case preparing, playingAirPlay, playingMac, off, launchAtLogin, quit, language
     case routeLost, prepareFailed, loginUnavailable
     case tone, darker, brighter
+    case adaptive, adaptiveHint, headroom, boostNow, micDenied, micFailed
 }
 
 func tr(_ s: Str, _ l: Language) -> String {
@@ -51,6 +54,16 @@ func tr(_ s: Str, _ l: Language) -> String {
     case .tone: return p("Тембр", "Tone")
     case .darker: return p("темнее", "darker")
     case .brighter: return p("ярче (женские голоса)", "brighter (female voices)")
+    case .adaptive: return p("Подстраиваться под голоса (микрофон)", "Follow voices (microphone)")
+    case .adaptiveHint:
+        return p("Шум плавно становится громче, когда рядом громко говорят. Звук не записывается, считается только уровень.",
+                 "Noise rises smoothly when people nearby talk loudly. Nothing is recorded, only the level is measured.")
+    case .headroom: return p("Прибавка не больше", "Boost at most")
+    case .boostNow: return p("сейчас", "now")
+    case .micDenied:
+        return p("Нет доступа к микрофону. Разрешите его: Системные настройки → Конфиденциальность и безопасность → Микрофон",
+                 "No microphone access. Allow it in System Settings → Privacy & Security → Microphone")
+    case .micFailed: return p("Микрофон недоступен: ", "Microphone unavailable: ")
     }
 }
 
@@ -58,6 +71,8 @@ func tr(_ n: Notice, _ l: Language) -> String {
     switch n {
     case .routeLost: return tr(Str.routeLost, l)
     case .prepareFailed(let detail): return tr(Str.prepareFailed, l) + detail
+    case .micDenied: return tr(Str.micDenied, l)
+    case .micFailed(let detail): return tr(Str.micFailed, l) + detail
     }
 }
 
