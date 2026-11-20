@@ -2,7 +2,7 @@ import AVFoundation
 import CoreAudio
 import NoiseKit
 
-/// Слушает микрофон и отдаёт мощность в речевой полосе раз в 0.1 с. Звук не записывается и никуда не уходит:
+/// Слушает микрофон и раз в 0.1 с отдаёт мощность в речевой полосе и признак голоса. Звук не записывается и никуда не уходит:
 /// из каждого буфера считается только средний уровень.
 /// Берёт встроенный микрофон Mac, если он есть: микрофон Bluetooth-наушников переключил бы их в режим гарнитуры.
 @MainActor
@@ -11,7 +11,7 @@ final class MicMonitor {
 
     private var engine: AVAudioEngine?
     private var configObserver: NSObjectProtocol?
-    private var onFrame: ((Double, Double) -> Void)?
+    private var onFrame: ((LevelMeter.Frame, Double) -> Void)?
     private var lastRestart = Date.distantPast
 
     var isRunning: Bool { engine != nil }
@@ -24,8 +24,8 @@ final class MicMonitor {
         }
     }
 
-    /// - Parameter onFrame: (мощность кадра, длина кадра в секундах), вызывается на главном потоке.
-    func start(onFrame: @escaping (Double, Double) -> Void) throws {
+    /// - Parameter onFrame: (кадр: мощность и признак голоса, длина кадра в секундах), вызывается на главном потоке.
+    func start(onFrame: @escaping (LevelMeter.Frame, Double) -> Void) throws {
         stop()
         self.onFrame = onFrame
         let engine = AVAudioEngine()

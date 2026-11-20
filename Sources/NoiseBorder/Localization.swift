@@ -56,8 +56,8 @@ func tr(_ s: Str, _ l: Language) -> String {
     case .brighter: return p("ярче (женские голоса)", "brighter (female voices)")
     case .adaptive: return p("Подстраиваться под голоса (микрофон)", "Follow voices (microphone)")
     case .adaptiveHint:
-        return p("Шум плавно становится громче, когда рядом громко говорят. Звук не записывается, считается только уровень.",
-                 "Noise rises smoothly when people nearby talk loudly. Nothing is recorded, only the level is measured.")
+        return p("Шум становится громче, когда рядом громко говорят. Реагирует на продолжительный звук, а не на щелчки и скрипы. Звук не записывается.",
+                 "Noise rises when people nearby talk loudly. Reacts to sustained sound, not to clicks or creaks. Nothing is recorded.")
     case .headroom: return p("Прибавка не больше", "Boost at most")
     case .boostNow: return p("сейчас", "now")
     case .micDenied:

@@ -83,6 +83,7 @@ final class NoisePlayer: ObservableObject {
     private var bag = Set<AnyCancellable>()
     private let mic = MicMonitor()
     private var gain = AdaptiveGain()
+    private var micLog: MicLog?
     /// Сколько прибавки сейчас добавлено к громкости приёмника (в единицах его шкалы 0...1).
     private var appliedChannelDelta: Float = 0
     private var lastBoostSet = Date.distantPast
@@ -150,6 +151,7 @@ final class NoisePlayer: ObservableObject {
         let restoreChannel: Float? = (rampTask != nil && rampUsesChannel) ? rampTarget
             : (appliedChannelDelta != 0 ? channelVolume : nil)
         mic.stop()
+        micLog = nil
         resetBoost()
         cancelRamp()
         let finish = { [weak self] in
@@ -217,8 +219,9 @@ final class NoisePlayer: ObservableObject {
             }
             guard adaptive, isPlaying, !mic.isRunning else { return }
             gain.relearn()
+            micLog = MicLog()
             do {
-                try mic.start { [weak self] power, dt in self?.micFrame(power: power, dt: dt) }
+                try mic.start { [weak self] frame, dt in self?.micFrame(frame, dt: dt) }
             } catch {
                 adaptive = false
                 message = .micFailed("\(error)")
@@ -228,6 +231,7 @@ final class NoisePlayer: ObservableObject {
 
     private func stopMic() {
         mic.stop()
+        micLog = nil
         let hadBoost = appliedChannelDelta != 0 || boostDB != 0
         resetBoost()
         guard isPlaying, hadBoost, rampTask == nil, fadeTask == nil else { return }
@@ -241,7 +245,7 @@ final class NoisePlayer: ObservableObject {
     }
 
     /// Кадр уровня с микрофона: пересчитать прибавку и применить её к громкости приёмника или плеера.
-    private func micFrame(power: Double, dt: Double) {
+    private func micFrame(_ frame: LevelMeter.Frame, dt: Double) {
         guard isPlaying, adaptive else { return }
         // Во время нарастания громкость шума меняем не мы: прибавку не даём, фон переучивается.
         let busy = rampTask != nil || fadeTask != nil
@@ -253,7 +257,8 @@ final class NoisePlayer: ObservableObject {
         } else {
             room = volume > 0 ? 20 * log10(Double(VolumePolicy.maximum / volume)) : 0
         }
-        let b = gain.update(power: power, dt: dt, maxBoostDB: max(0, min(headroomDB, room)))
+        let b = gain.update(power: frame.power, dt: dt, maxBoostDB: max(0, min(headroomDB, room)))
+        micLog?.write(frame, gain: gain)
         let shown = (b * 2).rounded() / 2
         if shown != boostDB { boostDB = shown }
         guard !busy else { return }

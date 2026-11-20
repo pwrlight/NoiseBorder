@@ -160,6 +160,91 @@ for gain in [Tone.steps.first!, Tone.maximum] {
 }
 check("ближайший шаг тембра", Tone.steps[Tone.nearestIndex(4)] == 3 && Tone.steps[Tone.nearestIndex(100)] == Tone.maximum, "4 -> 3, 100 -> max")
 
+// MARK: Тестовые сигналы для детектора голоса (48 кГц)
+struct Sig {
+    static let rate = 48000.0
+    static func rng(_ seed: UInt64) -> () -> Double {
+        var st = seed
+        return { st = st &* 6364136223846793005 &+ 1442695040888963407; return Double(st >> 11) / Double(1 << 53) * 2 - 1 }
+    }
+    static func rmsOf(_ x: [Double]) -> Double { (x.reduce(0) { $0 + $1 * $1 } / Double(x.count)).squareRoot() }
+    static func scaled(_ x: [Double], rms: Double) -> [Double] { let k = rms / max(rmsOf(x), 1e-12); return x.map { $0 * k } }
+    /// Гласная: гармоники основного тона с формантами, вибрато ±3% на 5 Гц.
+    static func vowel(f0: Double, seconds: Double, formants: [Double] = [800, 1300, 2600]) -> [Double] {
+        let n = Int(seconds * rate)
+        var out = [Double](repeating: 0, count: n)
+        var phase = 0.0
+        let kMax = Int(4000 / f0)
+        let amps = (1...kMax).map { k -> Double in
+            let fk = Double(k) * f0
+            return formants.reduce(0.05) { $0 + 1 / (1 + pow((fk - $1) / 120, 2)) }
+        }
+        for i in 0..<n {
+            let t = Double(i) / rate
+            phase += 2 * Double.pi * f0 * (1 + 0.03 * sin(2 * Double.pi * 5 * t)) / rate
+            var v = 0.0
+            for k in 1...kMax { v += amps[k - 1] * sin(Double(k) * phase) }
+            out[i] = v
+        }
+        return out
+    }
+    static func masking(_ type: NoiseType, seconds: Double) -> [Double] {
+        var o = RenderOptions(); o.seconds = seconds; o.crossfadeSeconds = 1
+        return NoiseRenderer.render(type, options: o)[0].map(Double.init)
+    }
+    /// Щелчки клавиатуры: 3 мс затухающего шума каждые 150 мс.
+    static func clicks(seconds: Double, every: Double = 0.15, length: Double = 0.003) -> [Double] {
+        let n = Int(seconds * rate), r = rng(5)
+        var out = [Double](repeating: 0, count: n)
+        var start = 0
+        while start < n {
+            let len = Int(length * rate)
+            for j in 0..<len where start + j < n { out[start + j] = r() * exp(-Double(j) / Double(len) * 4) }
+            start += Int(every * rate)
+        }
+        return out
+    }
+    static func mix(_ a: [Double], _ b: [Double]) -> [Double] { zip(a, b).map { $0 + $1 } }
+    static func frames(_ x: [Double]) -> [LevelMeter.Frame] {
+        var m = LevelMeter(sampleRate: rate)
+        let f = x.map(Float.init)
+        return f.withUnsafeBufferPointer { m.process($0) }
+    }
+    static func voicedShare(_ x: [Double]) -> Double {
+        let fr = frames(x)
+        return Double(fr.filter(\.isVoiced).count) / Double(fr.count)
+    }
+}
+
+print("\n== признак голоса (только для журнала калибровки)")
+// Голос (гласные с вибрато, основной тон 110/220/300 Гц) под речевым шумом должен узнаваться,
+// а шумы, щелчки клавиатуры и хлопки нет.
+do {
+    let sec = 5.0
+    let noise = Sig.scaled(Sig.masking(.speech, seconds: sec), rms: 0.1)
+    let others: [(String, [Double])] = [
+        ("речевой шум", noise),
+        ("розовый шум", Sig.scaled(Sig.masking(.pink, seconds: sec), rms: 0.1)),
+        ("белый шум", Sig.scaled(Sig.masking(.white, seconds: sec), rms: 0.1)),
+        ("коричневый шум (гул вентиляции)", Sig.scaled(Sig.masking(.brown, seconds: sec), rms: 0.1)),
+        ("клавиатура в тишине", Sig.clicks(seconds: sec)),
+        ("клавиатура под шумом", Sig.mix(noise, Sig.scaled(Sig.clicks(seconds: sec), rms: 0.3))),
+        ("хлопки дверью", Sig.clicks(seconds: sec, every: 1, length: 0.05)),
+    ]
+    for (name, x) in others {
+        let fr = Sig.frames(x)
+        let share = Double(fr.filter(\.isVoiced).count) / Double(fr.count)
+        check("не голос: \(name)", share < 0.05, "кадров с голосом \(f(share * 100))%, признак до \(f(fr.map(\.voicing).max()!))")
+    }
+    for f0 in [110.0, 220, 300] {
+        let v = Sig.vowel(f0: f0, seconds: sec)
+        for snr in [0.0, 3] {
+            let share = Sig.voicedShare(Sig.mix(noise, Sig.scaled(v, rms: 0.1 * pow(10, snr / 20))))
+            check("голос \(Int(f0)) Гц на \(Int(snr)) дБ громче шума", share >= 0.95, "кадров с голосом \(f(share * 100))%")
+        }
+    }
+}
+
 print("\n== подстройка под голоса (микрофон)")
 // Модель комнаты: микрофон слышит фон помещения, наш шум (с задержкой AirPlay 2 с) и речь соседей.
 // Речь: слоги по 200 мс с заполнением ~70% и паузы 0.5 с каждые ~3 с.
@@ -167,8 +252,10 @@ struct Room {
     var ambient = 0.3, noise = 1.0
     var latency = 2.0
 }
+/// `speech`: мощность голоса во времени; `bursts`: мощность прочих звуков без голоса (щелчки, хлопки).
 func simulate(_ room: Room, seconds: Double, maxBoost: Double = 12,
-              speech: (Double) -> Double, gain: inout AdaptiveGain, seed: UInt64 = 7) -> [Double] {
+              speech: (Double) -> Double, bursts: (Double) -> Double = { _ in 0 },
+              gain: inout AdaptiveGain, seed: UInt64 = 7) -> [Double] {
     let dt = 0.1
     var state = seed
     func uniform() -> Double {  // детерминированный ГПСЧ (LCG), чтобы проверка повторялась
@@ -187,6 +274,7 @@ func simulate(_ room: Room, seconds: Double, maxBoost: Double = 12,
         let g = applied.count > lag ? applied[applied.count - 1 - lag] : 0
         var p = room.ambient + room.noise * pow(10, g / 10)
         if sp > 0, syllableOn, !inPause { p += sp }
+        p += bursts(t)
         p *= pow(10, (uniform() - 0.5) * 0.6 / 10)  // ±0.3 дБ разброс кадра
         let b = gain.update(power: p, dt: dt, maxBoostDB: maxBoost)
         applied.append(b)
@@ -201,19 +289,41 @@ let n0 = 1.3  // фон при нулевой прибавке в модели �
 
 do {
     var g = AdaptiveGain(); g.relearn()
+    // Клавиатура и хлопки на 15 дБ громче фона 5 минут: без голоса прибавки нет.
+    let r = simulate(Room(), seconds: 300, speech: { _ in 0 },
+                     bursts: { t in t > 30 && t.truncatingRemainder(dividingBy: 0.7) < 0.1 ? 30 * n0 : 0 }, gain: &g)
+    check("щелчки и хлопки: прибавки нет", peak(r, from: 0, to: 300) < 0.5, "максимум \(f(peak(r, from: 0, to: 300))) дБ")
+}
+do {
+    var g = AdaptiveGain(); g.relearn()
+    // Короткий возглас 0.3 с на 15 дБ громче: не разговор.
+    let r = simulate(Room(), seconds: 120, speech: { $0 >= 60 && $0 < 60.3 ? 30 * n0 : 0 }, gain: &g)
+    check("одиночный короткий возглас: почти без прибавки", peak(r, from: 0, to: 120) < 1, "максимум \(f(peak(r, from: 0, to: 120))) дБ")
+}
+do {
+    var g = AdaptiveGain(); g.relearn()
+    // Скрипы стула по 0.1 с каждые 0.4 с (25% кадров) и скрип 0.6 с подряд, на 15 дБ громче: не разговор.
+    let r = simulate(Room(), seconds: 200, speech: { _ in 0 }, bursts: { t in
+        (t > 30 && t < 90 && t.truncatingRemainder(dividingBy: 0.4) < 0.1) || (t > 120 && t < 120.6) ? 30 * n0 : 0
+    }, gain: &g)
+    check("частые скрипы и скрип 0.6 с: прибавки нет", peak(r, from: 0, to: 200) < 0.5, "максимум \(f(peak(r, from: 0, to: 200))) дБ")
+}
+
+do {
+    var g = AdaptiveGain(); g.relearn()
     let r = simulate(Room(), seconds: 600, speech: { _ in 0 }, gain: &g)
     check("тишина: шум не раскачивается", peak(r, from: 30, to: 600) < 0.5, "максимум прибавки \(f(peak(r, from: 30, to: 600))) дБ за 10 мин")
 }
 do {
     var g = AdaptiveGain(); g.relearn()
     let r = simulate(Room(), seconds: 240, speech: { $0 >= 60 && $0 < 90 ? 10 * n0 : 0 }, gain: &g)
-    check("громкая речь (+10 дБ): прибавка растёт", at(r, 72) > 5, "через 12 с речи \(f(at(r, 72))) дБ")
-    let rise = zip(r.dropFirst(), r).map { $0 - $1 }.max()! * 10
-    check("плавный рост", rise <= 1.0001, "не быстрее \(f(rise)) дБ/с")
+    let t6 = Double(r.firstIndex { $0 >= 6 } ?? r.count) / 10 - 60
+    check("громкая речь (+10 дБ): прыжок, но мягкий", t6 >= 2.5 && t6 <= 6, "+6 дБ через \(f(t6)) с речи (первый вариант ≈1.7 с)")
+    check("громкая речь: добирает остаток", at(r, 70) > 8, "через 10 с речи \(f(at(r, 70))) дБ")
     check("громкая речь: не выше уровня речи", peak(r, from: 0, to: 240) < 11.5, "максимум \(f(peak(r, from: 0, to: 240))) дБ")
     check("после речи: плавно возвращается", at(r, 150) < 1 && at(r, 92) > 3, "через 2 с \(f(at(r, 92))) дБ, через 60 с \(f(at(r, 150))) дБ")
     let jumps = zip(r.dropFirst(), r).map { abs($0 - $1) }.max()!
-    check("без скачков", jumps < 0.15, "максимальный шаг \(f(jumps)) дБ за 0.1 с")
+    check("без скачков", jumps < 0.6, "максимальный шаг \(f(jumps)) дБ за 0.1 с")
 }
 do {
     var g = AdaptiveGain(); g.relearn()
@@ -255,7 +365,7 @@ do {
     var m = LevelMeter(sampleRate: 48000)
     func tone(_ hz: Double) -> [Double] {
         let x = (0..<48000).map { Float(sin(2 * Double.pi * hz * Double($0) / 48000)) }
-        return x.withUnsafeBufferPointer { m.process($0) }
+        return x.withUnsafeBufferPointer { m.process($0) }.map(\.power)
     }
     let k = tone(1000), lowHum = tone(50)
     check("измеритель: кадры по 0.1 с", k.count == 10, "\(k.count) кадров за 1 с")
