@@ -4,6 +4,8 @@
 
 <p align="center"><img src="docs/screenshot.png" width="386" alt="NoiseBorder menu bar window: noise type, AirPlay receiver volume, AirPlay output, language switch"></p>
 
+<p align="center"><b><a href="https://github.com/pwrlight/NoiseBorder/releases/download/v0.1.0/NoiseBorder-0.1.0.dmg">⬇ Download NoiseBorder 0.1.0 (DMG)</a></b><br>macOS 13+ · Apple Silicon &amp; Intel · <a href="https://github.com/pwrlight/NoiseBorder/releases">all releases</a> · first launch: see <a href="#install">Install</a></p>
+
 A tiny macOS menu bar app that plays a **noise barrier** (speech-shaped, white, pink or brown noise) to an **AirPlay receiver** — a router with AirPlay, a speaker, a HomePod — to mask conversations in an office.
 
 The noise goes to AirPlay only for this app. Everything else on your Mac (YouTube, calls, music) keeps playing on its own output.
